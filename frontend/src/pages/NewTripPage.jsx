@@ -83,14 +83,20 @@ export default function NewTripPage() {
     return () => clearTimeout(timer);
   }, [formData.endQuery, endCoords]);
 
+  const createManualCoords = (address) => ({
+    label: address,
+    lat: null, // Backend kann später geocoden
+    lng: null
+  });
+
   const validateForm = () => {
     const newErrors = {};
 
-    if (!startCoords) {
-      newErrors.start = 'Bitte wählen Sie eine gültige Start-Adresse aus der Vorschlagsliste aus.';
+    if (!startCoords && formData.startQuery.trim().length < 3) {
+      newErrors.start = 'Bitte geben Sie mindestens 3 Zeichen ein oder wählen Sie aus den Vorschlägen aus.';
     }
-    if (!endCoords) {
-      newErrors.end = 'Bitte wählen Sie eine gültige Ziel-Adresse aus der Vorschlagsliste aus.';
+    if (!endCoords && formData.endQuery.trim().length < 3) {
+      newErrors.end = 'Bitte geben Sie mindestens 3 Zeichen ein oder wählen Sie aus den Vorschlägen aus.';
     }
     if (!formData.departureTime) {
       newErrors.departureTime = 'Abfahrtszeit ist erforderlich.';
@@ -122,17 +128,20 @@ export default function NewTripPage() {
     if (!validateForm()) return;
 
     setLoading(true);
+    // Wenn Coords nicht gesetzt sind, verwende freie Texteingabe als Fallback
+    const finalStartCoords = startCoords || createManualCoords(formData.startQuery);
+    const finalEndCoords = endCoords || createManualCoords(formData.endQuery);
     try {
       if (formData.isRecurring) {
         // Wiederkehrende Fahrt anlegen
         await api.post('/recurring-trips', {
           user_id: currentUser.id,
-          start_address: startCoords.label,
-          start_lat: startCoords.lat,
-          start_lng: startCoords.lng,
-          end_address: endCoords.label,
-          end_lat: endCoords.lat,
-          end_lng: endCoords.lng,
+          start_address: finalStartCoords.label,
+          start_lat: finalStartCoords.lat,
+          start_lng: finalStartCoords.lng,
+          end_address: finalEndCoords.label,
+          end_lat: finalEndCoords.lat,
+          end_lng: finalEndCoords.lng,
           departure_time: formData.departureTime.split('T')[1], // Nur HH:MM für Master
           trip_type: formData.tripType,
           seats_available: formData.tripType === 1 ? formData.seats : null,
@@ -144,12 +153,12 @@ export default function NewTripPage() {
         // Einzelfahrt anlegen
         await api.post('/trips', {
           user_id: currentUser.id,
-          start_address: startCoords.label,
-          start_lat: startCoords.lat,
-          start_lng: startCoords.lng,
-          end_address: endCoords.label,
-          end_lat: endCoords.lat,
-          end_lng: endCoords.lng,
+          start_address: finalStartCoords.label,
+          start_lat: finalStartCoords.lat,
+          start_lng: finalStartCoords.lng,
+          end_address: finalEndCoords.label,
+          end_lat: finalEndCoords.lat,
+          end_lng: finalEndCoords.lng,
           departure_time: new Date(formData.departureTime).toISOString(),
           trip_type: formData.tripType,
           seats_available: formData.tripType === 1 ? formData.seats : null
@@ -235,6 +244,25 @@ export default function NewTripPage() {
                 ))}
               </div>
             )}
+
+            {/* Fallback-Button: Freie Texteingabe verwenden */}
+            {!startCoords &&
+             formData.startQuery.trim().length >= 3 &&
+             startSuggestions.length === 0 &&
+             !startLoading && (
+              <div className="absolute z-[2000] left-0 right-0 mt-1 bg-white border border-iosGray-200 rounded-xl shadow-lg p-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStartCoords(createManualCoords(formData.startQuery));
+                    setStartSuggestions([]);
+                  }}
+                  className="w-full p-3 text-sm text-iosBlue hover:bg-blue-50 cursor-pointer rounded-lg font-medium text-left"
+                >
+                  💡 &quot;{formData.startQuery}&quot; verwenden
+                </button>
+              </div>
+            )}
             {errors.start && <p className="text-xs text-iosRed mt-1 font-medium">{errors.start}</p>}
           </div>
 
@@ -280,6 +308,25 @@ export default function NewTripPage() {
                     {s.label}
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Fallback-Button: Freie Texteingabe verwenden */}
+            {!endCoords &&
+             formData.endQuery.trim().length >= 3 &&
+             endSuggestions.length === 0 &&
+             !endLoading && (
+              <div className="absolute z-[2000] left-0 right-0 mt-1 bg-white border border-iosGray-200 rounded-xl shadow-lg p-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEndCoords(createManualCoords(formData.endQuery));
+                    setEndSuggestions([]);
+                  }}
+                  className="w-full p-3 text-sm text-iosBlue hover:bg-blue-50 cursor-pointer rounded-lg font-medium text-left"
+                >
+                  💡 &quot;{formData.endQuery}&quot; verwenden
+                </button>
               </div>
             )}
             {errors.end && <p className="text-xs text-iosRed mt-1 font-medium">{errors.end}</p>}
