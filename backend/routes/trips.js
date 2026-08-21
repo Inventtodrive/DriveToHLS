@@ -1,19 +1,23 @@
 import express from 'express';
 import Joi from 'joi';
+import axios from 'axios';
 import { query } from '../db.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
+const NOMINATIM_API_URL = process.env.NOMINATIM_API_URL || 'https://nominatim.openstreetmap.org';
+let lastNominatimRequest = 0;
 
-// Joi-Validierung für neue Fahrten (gemäß Vorgabe)
+// Joi-Validierung für neue Fahrten
+// Koordinaten können null sein (freie Texteingabe – Backend geocodet dann selbst)
 const tripSchema = Joi.object({
   user_id: Joi.number().integer().positive().required(),
-  start_address: Joi.string().min(5).max(255).required(),
-  start_lat: Joi.number().min(-90).max(90).required(),
-  start_lng: Joi.number().min(-180).max(180).required(),
-  end_address: Joi.string().min(5).max(255).required(),
-  end_lat: Joi.number().min(-90).max(90).required(),
-  end_lng: Joi.number().min(-180).max(180).required(),
+  start_address: Joi.string().min(3).max(255).required(),
+  start_lat: Joi.number().min(-90).max(90).allow(null).optional(),
+  start_lng: Joi.number().min(-180).max(180).allow(null).optional(),
+  end_address: Joi.string().min(3).max(255).required(),
+  end_lat: Joi.number().min(-90).max(90).allow(null).optional(),
+  end_lng: Joi.number().min(-180).max(180).allow(null).optional(),
   departure_time: Joi.date().iso().greater('now').required().messages({
     'date.greater': 'Die Abfahrtszeit muss in der Zukunft liegen.'
   }),
@@ -147,7 +151,7 @@ router.post('/', authenticateToken, async (req, res, next) => {
       return res.status(403).json({ error: 'Sie können keine Fahrten für andere Benutzer erstellen.' });
     }
 
-    const {
+    let {
       user_id,
       start_address,
       start_lat,
@@ -159,6 +163,47 @@ router.post('/', authenticateToken, async (req, res, next) => {
       trip_type,
       seats_available
     } = value;
+
+    // Geocoding-Fallback: Koordinaten automatisch ermitteln wenn null
+    const geocodeAddress = async (address) => {
+      try {
+        const now = Date.now();
+        const timeSinceLast = now - lastNominatimRequest;
+        if (timeSinceLast < 1000) {
+          await new Promise(resolve => setTimeout(resolve, 1000 - timeSinceLast));
+        }
+        lastNominatimRequest = Date.now();
+
+        const response = await axios.get(`${NOMINATIM_API_URL}/search`, {
+          params: { q: address, format: 'json', limit: 1 },
+          headers: { 'User-Agent': 'CarpoolApp/1.0' }
+        });
+
+        if (response.data && response.data.length > 0) {
+          return {
+            lat: parseFloat(response.data[0].lat),
+            lng: parseFloat(response.data[0].lon)
+          };
+        }
+      } catch (geocodeErr) {
+        console.warn('Geocoding-Fallback fehlgeschlagen für:', address, geocodeErr.message);
+      }
+      return { lat: null, lng: null };
+    };
+
+    if (start_lat === null || start_lng === null) {
+      console.log('Geocode Startadresse (Fallback):', start_address);
+      const coords = await geocodeAddress(start_address);
+      start_lat = coords.lat;
+      start_lng = coords.lng;
+    }
+
+    if (end_lat === null || end_lng === null) {
+      console.log('Geocode Zieladresse (Fallback):', end_address);
+      const coords = await geocodeAddress(end_address);
+      end_lat = coords.lat;
+      end_lng = coords.lng;
+    }
 
     const result = await query(`
       INSERT INTO trips 
@@ -176,10 +221,10 @@ router.post('/', authenticateToken, async (req, res, next) => {
       name: req.user.name,
       phone: req.user.phone
     };
-    newTrip.start_lat = parseFloat(newTrip.start_lat);
-    newTrip.start_lng = parseFloat(newTrip.start_lng);
-    newTrip.end_lat = parseFloat(newTrip.end_lat);
-    newTrip.end_lng = parseFloat(newTrip.end_lng);
+    newTrip.start_lat = newTrip.start_lat ? parseFloat(newTrip.start_lat) : null;
+    newTrip.start_lng = newTrip.start_lng ? parseFloat(newTrip.start_lng) : null;
+    newTrip.end_lat = newTrip.end_lat ? parseFloat(newTrip.end_lat) : null;
+    newTrip.end_lng = newTrip.end_lng ? parseFloat(newTrip.end_lng) : null;
 
     // WebSocket Broadcast
     const io = req.app.get('io');
