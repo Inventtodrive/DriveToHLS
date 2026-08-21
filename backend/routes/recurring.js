@@ -1,18 +1,21 @@
 import express from 'express';
 import Joi from 'joi';
+import axios from 'axios';
 import { query } from '../db.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
+const NOMINATIM_API_URL = process.env.NOMINATIM_API_URL || 'https://nominatim.openstreetmap.org';
+let lastNominatimRequest = 0;
 
 const recurringSchema = Joi.object({
   user_id: Joi.number().integer().positive().required(),
-  start_address: Joi.string().min(5).max(255).required(),
-  start_lat: Joi.number().min(-90).max(90).required(),
-  start_lng: Joi.number().min(-180).max(180).required(),
-  end_address: Joi.string().min(5).max(255).required(),
-  end_lat: Joi.number().min(-90).max(90).required(),
-  end_lng: Joi.number().min(-180).max(180).required(),
+  start_address: Joi.string().min(3).max(255).required(),
+  start_lat: Joi.number().min(-90).max(90).allow(null).optional(),
+  start_lng: Joi.number().min(-180).max(180).allow(null).optional(),
+  end_address: Joi.string().min(3).max(255).required(),
+  end_lat: Joi.number().min(-90).max(90).allow(null).optional(),
+  end_lng: Joi.number().min(-180).max(180).allow(null).optional(),
   departure_time: Joi.string().pattern(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).required().messages({
     'string.pattern.base': 'Uhrzeit muss im Format HH:MM sein.'
   }),
@@ -105,7 +108,7 @@ router.post('/', authenticateToken, async (req, res, next) => {
       return res.status(403).json({ error: 'Sie dürfen keine Fahrten für andere Benutzer erstellen.' });
     }
 
-    const {
+    let {
       user_id,
       start_address,
       start_lat,
@@ -120,6 +123,39 @@ router.post('/', authenticateToken, async (req, res, next) => {
       day_of_week,
       end_date
     } = value;
+
+    // Geocoding-Fallback: Koordinaten automatisch ermitteln wenn null
+    const geocodeAddress = async (address) => {
+      try {
+        const now = Date.now();
+        const timeSinceLast = now - lastNominatimRequest;
+        if (timeSinceLast < 1000) {
+          await new Promise(resolve => setTimeout(resolve, 1000 - timeSinceLast));
+        }
+        lastNominatimRequest = Date.now();
+        const response = await axios.get(`${NOMINATIM_API_URL}/search`, {
+          params: { q: address, format: 'json', limit: 1 },
+          headers: { 'User-Agent': 'CarpoolApp/1.0' }
+        });
+        if (response.data && response.data.length > 0) {
+          return { lat: parseFloat(response.data[0].lat), lng: parseFloat(response.data[0].lon) };
+        }
+      } catch (geocodeErr) {
+        console.warn('Geocoding-Fallback fehlgeschlagen für:', address, geocodeErr.message);
+      }
+      return { lat: null, lng: null };
+    };
+
+    if (start_lat === null || start_lng === null) {
+      const coords = await geocodeAddress(start_address);
+      start_lat = coords.lat;
+      start_lng = coords.lng;
+    }
+    if (end_lat === null || end_lng === null) {
+      const coords = await geocodeAddress(end_address);
+      end_lat = coords.lat;
+      end_lng = coords.lng;
+    }
 
     // Verwende Transaktion
     await query('BEGIN');
